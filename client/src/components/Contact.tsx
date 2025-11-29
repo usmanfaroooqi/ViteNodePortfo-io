@@ -6,12 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
-import { Mail, MapPin, Phone, CheckCircle2, Sparkles, Loader2, Lightbulb, Wand2, BookOpen } from "lucide-react";
+import { Mail, MapPin, Phone, CheckCircle2, Sparkles, Loader2, Lightbulb, Wand2, BookOpen, AlertCircle } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import * as VisuallyHidden from "@radix-ui/react-visually-hidden";
+import { useToast } from "@/hooks/use-toast";
+import { ErrorHandler, getErrorToastConfig, getSuccessToastConfig } from "@/lib/errors";
 
 export function Contact() {
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSent, setIsSent] = useState(false);
   const [defaultSubject, setDefaultSubject] = useState("");
@@ -23,6 +26,7 @@ export function Contact() {
   const [briefQuery, setBriefQuery] = useState("");
   const [generatedBrief, setGeneratedBrief] = useState("");
   const [isGeneratingBrief, setIsGeneratingBrief] = useState(false);
+  const [briefError, setBriefError] = useState<string | null>(null);
 
   useEffect(() => {
     const handlePrefill = (e: CustomEvent) => {
@@ -38,46 +42,98 @@ export function Contact() {
   }, []);
 
   const generateIdeas = async () => {
-    if (!subjectRef || !subjectRef.value.trim()) {
-      alert("Please enter a project type first (e.g., 'Logo Design', 'Branding')");
-      return;
+    try {
+      if (!subjectRef || !subjectRef.value.trim()) {
+        const error = ErrorHandler.emptyInput("Project Type");
+        toast(getErrorToastConfig(error));
+        return;
+      }
+      
+      setIsGenerating(true);
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      
+      const projectType = subjectRef.value.trim();
+      const ideas = generateDesignIdeas(projectType);
+      
+      if (messageRef) {
+        messageRef.value = ideas;
+      }
+      
+      toast(getSuccessToastConfig("Design ideas generated successfully!"));
+    } catch (error) {
+      const appError = ErrorHandler.handleError(error);
+      ErrorHandler.logError(appError, "generateIdeas");
+      toast(getErrorToastConfig(appError));
+    } finally {
+      setIsGenerating(false);
     }
-    
-    setIsGenerating(true);
-    await new Promise(resolve => setTimeout(resolve, 1200));
-    
-    const projectType = subjectRef.value.trim();
-    const ideas = generateDesignIdeas(projectType);
-    
-    if (messageRef) {
-      messageRef.value = ideas;
-    }
-    
-    setIsGenerating(false);
   };
 
   const generateDesignBrief = async () => {
-    if (!briefQuery.trim()) {
-      alert("Please describe your business or product idea");
-      return;
-    }
-
-    setIsGeneratingBrief(true);
     try {
+      setBriefError(null);
+
+      // Validate input
+      if (!briefQuery.trim()) {
+        const error = ErrorHandler.emptyInput("Business Idea");
+        ErrorHandler.logError(error, "generateDesignBrief");
+        setBriefError(error.userMessage);
+        toast(getErrorToastConfig(error));
+        return;
+      }
+
+      if (briefQuery.trim().length < 10) {
+        const error = ErrorHandler.invalidInput(
+          "Business Idea",
+          "Please provide at least 10 characters"
+        );
+        ErrorHandler.logError(error, "generateDesignBrief");
+        setBriefError(error.userMessage);
+        toast(getErrorToastConfig(error));
+        return;
+      }
+
+      setIsGeneratingBrief(true);
+      
       const response = await fetch("/api/generate-brief", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: briefQuery })
+        body: JSON.stringify({ query: briefQuery }),
+        signal: AbortSignal.timeout(30000), // 30 second timeout
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        setGeneratedBrief(data.brief || "Brief generation complete");
-      } else {
-        alert("Could not generate brief. Please try again.");
+      if (!response.ok) {
+        const error = await ErrorHandler.handleFetchError(response);
+        ErrorHandler.logError(error, "generateDesignBrief API response");
+        setBriefError(error.userMessage);
+        toast(getErrorToastConfig(error));
+        return;
       }
-    } catch (error) {
-      console.error("Error:", error);
+
+      const data = await response.json();
+
+      if (!data.brief) {
+        const error = ErrorHandler.parseError("Empty response from server");
+        ErrorHandler.logError(error, "generateDesignBrief empty response");
+        setBriefError(error.userMessage);
+        toast(getErrorToastConfig(error));
+        return;
+      }
+
+      setGeneratedBrief(data.brief);
+      toast(getSuccessToastConfig("Design brief generated successfully!"));
+    } catch (error: any) {
+      if (error.name === "AbortError") {
+        const timeoutError = ErrorHandler.timeoutError();
+        ErrorHandler.logError(timeoutError, "generateDesignBrief timeout");
+        setBriefError(timeoutError.userMessage);
+        toast(getErrorToastConfig(timeoutError));
+      } else {
+        const appError = ErrorHandler.handleError(error);
+        ErrorHandler.logError(appError, "generateDesignBrief");
+        setBriefError(appError.userMessage);
+        toast(getErrorToastConfig(appError));
+      }
     } finally {
       setIsGeneratingBrief(false);
     }
@@ -527,6 +583,17 @@ Next Steps: Let's discuss your specific vision and requirements to create someth
               )}
             </Button>
 
+            {/* Error Display */}
+            {briefError && (
+              <div className="animate-in fade-in duration-300 p-4 rounded-xl bg-destructive/10 border border-destructive/30 flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-destructive flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-destructive">Error</p>
+                  <p className="text-sm text-destructive/80 mt-1">{briefError}</p>
+                </div>
+              </div>
+            )}
+
             {/* Output Section */}
             {generatedBrief && (
               <div className="space-y-3 animate-in fade-in duration-500">
@@ -546,7 +613,7 @@ Next Steps: Let's discuss your specific vision and requirements to create someth
             )}
 
             {/* Empty State */}
-            {!generatedBrief && !isGeneratingBrief && (
+            {!generatedBrief && !isGeneratingBrief && !briefError && (
               <div className="text-center py-8">
                 <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-primary/10 mb-4">
                   <Lightbulb className="w-8 h-8 text-primary" />
